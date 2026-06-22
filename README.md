@@ -26,15 +26,15 @@ airs-tts pipe -i:s -o:d speaker -o:f speech.wav
 - `InputSource` - Re-export from `airs-io`; input source enum shared by text/audio/ASR/TTS crates.
 - `OutputTarget` - Re-export from `airs-io`; output target enum shared by text/audio/ASR/TTS crates.
 - `TextInput` - Re-export from `airs-io`; implements `Stream<Item = airs_io::Result<String>>`.
-- `TextStream` - Alias for `TextInput`.
 
-- `TtsEngine` - Text-to-speech engine with chainable backend configuration. Implements `Sink<String, Error = TtsError>` and `Stream<Item = Result<AudioSlice>>`.
+- `TtsEngine` - Text-to-speech engine with chainable backend configuration.
 - `TtsEngine::new()` - Create a new engine with default backend and voice.
 - `TtsBackendKind` - Backend selection enum (e.g. `TtsBackendKind::Kokoro`).
-- `TtsEngine::backend(kind)` - Set the backend implementation.
-- `TtsEngine::voice(name)` - Set the voice by name (e.g. `"af_heart"`, `"bf_emma"`, `"zf_xiaobei"`).
-- `TtsEngine::speed(value)` - Set the speech speed multiplier (0.5-2.0, default 1.0).
-- `TtsEngine::init()` - Load the selected implementation before streaming.
+- `TtsEngine::set_backend(kind)` - Set the backend implementation.
+- `TtsEngine::set_voice(name)` - Set the voice by name (e.g. `"af_heart"`, `"bf_emma"`, `"zf_xiaobei"`).
+- `TtsEngine::set_speed(value)` - Set the speech speed multiplier (0.5-2.0, default 1.0).
+- `TtsEngine::init()` - Async; load the selected implementation before synthesis.
+- `TtsEngine::call(text)` - Async; one-shot synthesis: feed text and return a single `AudioSlice`.
 - `TtsEngine::is_ready()` - Return whether the selected backend has been initialized.
 - `TtsEngine::list_voices()` - List all available voice names.
 

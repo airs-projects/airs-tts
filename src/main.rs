@@ -3,8 +3,8 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use airs_audio::{AudioOutput, AudioSink};
-use airs_tts::{InputSource, OutputTarget, TextInput, TextStream, TtsBackendKind, TtsEngine};
+use airs_audio::AudioOutput;
+use airs_tts::{InputSource, OutputTarget, TextInput, TtsBackendKind, TtsEngine};
 use futures::SinkExt;
 use futures::StreamExt;
 
@@ -252,13 +252,13 @@ fn cmd_list_voices(_backend: TtsBackendKind) -> AppResult<()> {
 
 async fn cmd_pipe(options: PipeOptions) -> AppResult<()> {
     let mut tts = TtsEngine::new()
-        .backend(options.backend)
-        .voice(&options.voice)
-        .speed(options.speed)
-        .init()?;
+        .set_backend(options.backend)
+        .set_voice(&options.voice)
+        .set_speed(options.speed)
+        .init().await?;
 
     // input
-    let mut stream: TextStream = match &options.source {
+    let mut input: TextInput = match &options.source {
         InputSource::Stdin => {
             eprintln!("Reading from stdin...");
             TextInput::new(options.source.clone())
@@ -267,34 +267,22 @@ async fn cmd_pipe(options: PipeOptions) -> AppResult<()> {
     };
 
     // output
-    let mut sinks: Vec<AudioSink> = options
+    let mut outputs: Vec<AudioOutput> = options
         .targets
         .iter()
         .map(|target| AudioOutput::new(target.clone()))
         .collect::<Vec<_>>();
 
     // process
-    while let Some(sentence) = stream.next().await {
-        tts.send(sentence?).await?;
-        while let Some(slice) = tts.next().await {
-            let slice = slice?;
-            for sink in sinks.iter_mut() {
-                sink.send(slice.clone()).await?;
-            }
-            break;
+    while let Some(sentence) = input.next().await {
+        let audio_slice = tts.call(sentence?).await?;
+        for output in outputs.iter_mut() {
+            output.send(audio_slice.clone()).await?;
         }
     }
 
-    tts.close().await?;
-    while let Some(slice) = tts.next().await {
-        let slice = slice?;
-        for sink in sinks.iter_mut() {
-            sink.send(slice.clone()).await?;
-        }
-    }
-
-    for sink in &mut sinks {
-        sink.close().await?;
+    for output in &mut outputs {
+        output.close().await?;
     }
 
     Ok(())

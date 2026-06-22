@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use async_trait::async_trait;
 use crate::backends::TtsBackend;
 use airs_audio::AudioSlice;
 use engine::{KokoroInferenceParams, KokoroModelParams};
@@ -19,8 +20,9 @@ pub(crate) mod voices;
 
 pub(crate) use engine::KokoroEngine;
 
+#[async_trait]
 impl TtsBackend for KokoroEngine {
-    fn init(&mut self) -> Result<()> {
+    async fn init(&mut self) -> Result<()> {
         if self.is_loaded() {
             return Ok(());
         }
@@ -56,6 +58,10 @@ impl TtsBackend for KokoroEngine {
             .into_iter()
             .map(|s| s.to_string())
             .collect())
+    }
+
+    async fn call(&mut self, text: String) -> Result<AudioSlice> {
+        KokoroEngine::call(self, text).map_err(|e| TtsError::Synthesis(e.to_string()))
     }
 }
 

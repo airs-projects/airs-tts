@@ -198,6 +198,21 @@ impl KokoroEngine {
             .map(|m| m.list_voices())
             .unwrap_or_default()
     }
+
+    /// One-shot synthesis: feed text and return audio slices synchronously.
+    pub fn call(&mut self, text: String) -> Result<AudioSlice, Box<dyn std::error::Error>> {
+        let params = KokoroInferenceParams {
+            voice: self.voice.clone(),
+            speed: self.speed,
+            style_index: None,
+        };
+        let result = self.synthesize(&text, Some(params))?;
+        Ok(AudioSlice {
+            samples: result.samples,
+            channels: 1,
+            sample_rate: result.sample_rate,
+        })
+    }
 }
 
 impl Drop for KokoroEngine {

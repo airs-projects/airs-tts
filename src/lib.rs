@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use airs_audio::AudioSlice;
-pub use airs_io::{InputSource, OutputTarget, TextInput, TextSplitter, TextStream};
+pub use airs_io::{InputSource, OutputTarget, TextInput, TextSplitter};
 use futures::{Sink, Stream};
 
 mod backends;
@@ -112,7 +112,7 @@ impl TtsEngine {
     }
 
     /// Set the backend implementation.
-    pub fn backend(mut self, kind: TtsBackendKind) -> Self {
+    pub fn set_backend(mut self, kind: TtsBackendKind) -> Self {
         self.backend_kind = kind;
         self.backend = None;
         self.is_ready = false;
@@ -122,19 +122,19 @@ impl TtsEngine {
     /// Set the voice by name.
     ///
     /// Validation happens at synthesis time when the engine looks up the voice.
-    pub fn voice(mut self, voice: impl Into<String>) -> Self {
+    pub fn set_voice(mut self, voice: impl Into<String>) -> Self {
         self.voice = voice.into();
         self
     }
 
     /// Set the speech speed multiplier.
-    pub fn speed(mut self, speed: f32) -> Self {
+    pub fn set_speed(mut self, speed: f32) -> Self {
         self.speed = speed;
         self
     }
 
     /// Load the selected implementation before the first synthesis call.
-    pub fn init(mut self) -> Result<Self> {
+    pub async fn init(mut self) -> Result<Self> {
         if self.backend.is_none() {
             #[cfg(feature = "kokoro")]
             {
@@ -156,7 +156,7 @@ impl TtsEngine {
         }
 
         let backend = self.backend.as_mut().unwrap();
-        backend.init()?;
+        backend.init().await?;
         backend.set_voice(&self.voice)?;
         backend.set_speed(self.speed);
         self.is_ready = true;
@@ -177,6 +177,17 @@ impl TtsEngine {
         }
 
         self.backend.as_mut().unwrap().list_voices()
+    }
+
+    /// One-shot synthesis: feed text and collect all output audio slices.
+    pub async fn call(&mut self, text: String) -> Result<AudioSlice> {
+        if !self.is_ready {
+            return Err(TtsError::InvalidInput(
+                "TTS backend is not initialized. Call init() first.".to_string(),
+            ));
+        }
+
+        self.backend.as_mut().unwrap().call(text).await
     }
 }
 
@@ -283,9 +294,9 @@ mod tests {
     #[test]
     fn engine_supports_chainable_settings() {
         let engine = TtsEngine::new()
-            .backend(TtsBackendKind::Kokoro)
-            .voice("bf_emma")
-            .speed(1.25);
+            .set_backend(TtsBackendKind::Kokoro)
+            .set_voice("bf_emma")
+            .set_speed(1.25);
 
         #[cfg(feature = "kokoro")]
         assert!(matches!(&engine.backend_kind, TtsBackendKind::Kokoro));
