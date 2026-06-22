@@ -21,26 +21,24 @@ airs-tts pipe -i:s -o:d speaker -o:f speech.wav
 
 - `version()` - Return the crate version string.
 - `Result<T>` - Library result type using `TtsError`.
-- `TextStream` - Boxed stream of sentence text using `TtsError`.
 - `TtsError` - Error enum for invalid input, backend load, synthesis, and audio failures.
 
-- `TextInputSource` - Input source enum: text, file, or stdin.
-- `TextInput` - Self-builder for text, file, or stdin input. Consumed by `.open()` to produce a sentence `TextStream`.
-- `TextInput::new(source)` - Select the text input source.
-- `TextInput::open(self)` - Consume and build the sentence `TextStream`.
+- `InputSource` - Re-export from `airs-io`; input source enum shared by text/audio/ASR/TTS crates.
+- `OutputTarget` - Re-export from `airs-io`; output target enum shared by text/audio/ASR/TTS crates.
+- `TextInput` - Re-export from `airs-io`; implements `Stream<Item = airs_io::Result<String>>`.
+- `TextStream` - Alias for `TextInput`.
 
-- `TtsEngine` - Text-to-speech engine with chainable backend configuration.
+- `TtsEngine` - Text-to-speech engine with chainable backend configuration. Implements `Sink<String, Error = TtsError>` and `Stream<Item = Result<AudioSlice>>`.
 - `TtsEngine::new()` - Create a new engine with default backend and voice.
 - `TtsBackendKind` - Backend selection enum (e.g. `TtsBackendKind::Kokoro`).
 - `TtsEngine::backend(kind)` - Set the backend implementation.
 - `TtsEngine::voice(name)` - Set the voice by name (e.g. `"af_heart"`, `"bf_emma"`, `"zf_xiaobei"`).
 - `TtsEngine::speed(value)` - Set the speech speed multiplier (0.5-2.0, default 1.0).
-- `TtsEngine::init()` - Load the selected implementation before the first synthesis call.
+- `TtsEngine::init()` - Load the selected implementation before streaming.
 - `TtsEngine::is_ready()` - Return whether the selected backend has been initialized.
 - `TtsEngine::list_voices()` - List all available voice names.
-- `TtsEngine::invoke(text)` - Invoke the selected backend and return speech audio in a single `AudioSlice` (24kHz mono f32 PCM).
 
-- `SentenceSplitter` - Incrementally split text chunks into complete sentences.
-- `SentenceSplitter::new()` - Create an empty splitter.
-- `SentenceSplitter::push(chunk)` - Append text and return complete sentences.
-- `SentenceSplitter::finish()` - Return the remaining buffered text, if any.
+- `TextSplitter` - Incrementally split text chunks into complete sentences.
+- `TextSplitter::new()` - Create an empty splitter.
+- `TextSplitter::push(chunk)` - Append text and return complete sentences.
+- `TextSplitter::finish()` - Return the remaining buffered text, if any.

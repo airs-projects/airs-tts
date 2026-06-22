@@ -1,12 +1,10 @@
-use std::collections::VecDeque;
-use std::io::BufRead;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use airs_audio::AudioSlice;
-use futures::channel::mpsc;
-use tokio_stream::Stream;
+pub use airs_io::{InputSource, OutputTarget, TextInput, TextSplitter, TextStream};
+use futures::{Sink, Stream};
 
 mod backends;
 
@@ -27,7 +25,6 @@ pub enum TtsError {
 }
 
 pub type Result<T> = std::result::Result<T, TtsError>;
-pub type TextStream = Pin<Box<dyn tokio_stream::Stream<Item = Result<String>> + Send>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TtsBackendKind {
@@ -44,159 +41,6 @@ impl Default for TtsBackendKind {
         #[cfg(not(feature = "kokoro"))]
         {
             Self::Kokoro
-        }
-    }
-}
-
-/// Incrementally split text chunks into complete sentences.
-#[derive(Debug, Default)]
-pub struct SentenceSplitter {
-    buffer: String,
-}
-
-impl SentenceSplitter {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn push(&mut self, chunk: &str) -> Vec<String> {
-        self.buffer.push_str(chunk);
-
-        let mut sentences = Vec::new();
-        while let Some(end) = sentence_end(&self.buffer) {
-            let sentence = self.buffer[..end].trim();
-            if !sentence.is_empty() {
-                sentences.push(sentence.to_string());
-            }
-            self.buffer.drain(..end);
-        }
-
-        sentences
-    }
-
-    pub fn finish(&mut self) -> Option<String> {
-        let sentence = self.buffer.trim();
-        if sentence.is_empty() {
-            self.buffer.clear();
-            None
-        } else {
-            let sentence = sentence.to_string();
-            self.buffer.clear();
-            Some(sentence)
-        }
-    }
-}
-
-fn sentence_end(text: &str) -> Option<usize> {
-    for (index, ch) in text.char_indices() {
-        if is_sentence_terminal(ch) && !is_decimal_point(text, index) {
-            return Some(index + ch.len_utf8());
-        }
-    }
-
-    None
-}
-
-fn is_sentence_terminal(ch: char) -> bool {
-    matches!(
-        ch,
-        '.' | '!' | '?' | ';' | ':' | '\n' | '。' | '！' | '？' | '；' | '：'
-    )
-}
-
-fn is_decimal_point(text: &str, index: usize) -> bool {
-    let Some('.') = text[index..].chars().next() else {
-        return false;
-    };
-
-    let previous = text[..index].chars().next_back();
-    let next = text[index + '.'.len_utf8()..].chars().next();
-
-    previous.is_some_and(|ch| ch.is_ascii_digit()) && next.is_some_and(|ch| ch.is_ascii_digit())
-}
-
-pub struct TextInput {
-    source: TextInputSource,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum TextInputSource {
-    Text(String),
-    File(PathBuf),
-    Stdin,
-}
-
-struct SentenceTextStream {
-    chunks: TextStream,
-    splitter: SentenceSplitter,
-    pending: VecDeque<String>,
-    done: bool,
-}
-
-impl TextInput {
-    pub fn new(source: TextInputSource) -> Self {
-        Self { source }
-    }
-
-    pub fn open(self) -> TextStream {
-        let chunks = match self.source {
-            TextInputSource::Text(text) => Box::pin(tokio_stream::iter(vec![Ok(text)])),
-            TextInputSource::File(input) => Box::pin(tokio_stream::iter(vec![
-                std::fs::read_to_string(input).map_err(TtsError::from),
-            ])),
-            TextInputSource::Stdin => stdin_chunks(),
-        };
-
-        Box::pin(SentenceTextStream {
-            chunks,
-            splitter: SentenceSplitter::new(),
-            pending: VecDeque::new(),
-            done: false,
-        })
-    }
-}
-
-fn stdin_chunks() -> TextStream {
-    let (sender, receiver) = mpsc::unbounded::<Result<String>>();
-    tokio::task::spawn_blocking(move || {
-        for line in std::io::stdin().lock().lines() {
-            let chunk = line.map(|line| format!("{line}\n")).map_err(TtsError::from);
-            if sender.unbounded_send(chunk).is_err() {
-                break;
-            }
-        }
-    });
-
-    Box::pin(receiver)
-}
-
-impl Stream for SentenceTextStream {
-    type Item = Result<String>;
-
-    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        loop {
-            if let Some(sentence) = self.pending.pop_front() {
-                return Poll::Ready(Some(Ok(sentence)));
-            }
-
-            if self.done {
-                return Poll::Ready(None);
-            }
-
-            match self.chunks.as_mut().poll_next(context) {
-                Poll::Ready(Some(Ok(chunk))) => {
-                    let sentences = self.splitter.push(&chunk);
-                    self.pending.extend(sentences);
-                }
-                Poll::Ready(Some(Err(error))) => return Poll::Ready(Some(Err(error))),
-                Poll::Ready(None) => {
-                    if let Some(sentence) = self.splitter.finish() {
-                        self.pending.push_back(sentence);
-                    }
-                    self.done = true;
-                }
-                Poll::Pending => return Poll::Pending,
-            }
         }
     }
 }
@@ -221,7 +65,7 @@ impl std::fmt::Display for VoiceInfo {
 /// List available voices without initialising the TTS engine.
 ///
 /// Scans the default model directory for every compiled-in backend. This is a
-/// lightweight operation — it only reads file names, not the full voice data
+/// lightweight operation 鈥?it only reads file names, not the full voice data
 /// or ONNX model.
 pub fn tts_list_voices() -> Result<Vec<VoiceInfo>> {
     let mut voices: Vec<VoiceInfo> = Vec::new();
@@ -314,6 +158,7 @@ impl TtsEngine {
         let backend = self.backend.as_mut().unwrap();
         backend.init()?;
         backend.set_voice(&self.voice)?;
+        backend.set_speed(self.speed);
         self.is_ready = true;
         Ok(self)
     }
@@ -333,19 +178,70 @@ impl TtsEngine {
 
         self.backend.as_mut().unwrap().list_voices()
     }
+}
 
-    /// Invoke the selected backend and return speech audio in a single `AudioSlice`.
-    pub fn invoke(&mut self, text: &str) -> Result<AudioSlice> {
+impl Sink<String> for TtsEngine {
+    type Error = TtsError;
+
+    fn poll_ready(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<()>> {
+        if !self.is_ready {
+            return Poll::Ready(Err(TtsError::InvalidInput(
+                "TTS backend is not initialized. Call init() first.".to_string(),
+            )));
+        }
+
+        let backend = self.backend.as_mut().expect("ready engine has backend");
+        Pin::new(&mut **backend).poll_ready(context)
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, item: String) -> Result<()> {
         if !self.is_ready {
             return Err(TtsError::InvalidInput(
                 "TTS backend is not initialized. Call init() first.".to_string(),
             ));
         }
 
-        self.backend.as_mut().unwrap().invoke(text, self.speed)
+        let backend = self.backend.as_mut().expect("ready engine has backend");
+        Pin::new(&mut **backend).start_send(item)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<()>> {
+        if !self.is_ready {
+            return Poll::Ready(Err(TtsError::InvalidInput(
+                "TTS backend is not initialized. Call init() first.".to_string(),
+            )));
+        }
+
+        let backend = self.backend.as_mut().expect("ready engine has backend");
+        Pin::new(&mut **backend).poll_flush(context)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<()>> {
+        if !self.is_ready {
+            return Poll::Ready(Err(TtsError::InvalidInput(
+                "TTS backend is not initialized. Call init() first.".to_string(),
+            )));
+        }
+
+        let backend = self.backend.as_mut().expect("ready engine has backend");
+        Pin::new(&mut **backend).poll_close(context)
     }
 }
 
+impl Stream for TtsEngine {
+    type Item = Result<AudioSlice>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if !self.is_ready {
+            return Poll::Ready(Some(Err(TtsError::InvalidInput(
+                "TTS backend is not initialized. Call init() first.".to_string(),
+            ))));
+        }
+
+        let backend = self.backend.as_mut().expect("ready engine has backend");
+        Pin::new(&mut **backend).poll_next(context)
+    }
+}
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
@@ -366,7 +262,6 @@ fn model_path(name: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio_stream::StreamExt;
 
     #[test]
     fn version_returns_expected() {
@@ -410,74 +305,5 @@ mod tests {
 
         assert!(matches!(err, TtsError::InvalidInput(_)));
         assert!(!engine.is_ready());
-    }
-
-    #[test]
-    fn sentence_splitter_splits_complete_sentences() {
-        let mut splitter = SentenceSplitter::new();
-
-        let sentences = splitter.push("Hello world. Testing!");
-
-        assert_eq!(sentences, vec!["Hello world.", "Testing!"]);
-        assert_eq!(splitter.finish(), None);
-    }
-
-    #[test]
-    fn sentence_splitter_keeps_incomplete_chunk() {
-        let mut splitter = SentenceSplitter::new();
-
-        assert!(splitter.push("Hello").is_empty());
-        assert_eq!(splitter.push(" world."), vec!["Hello world."]);
-        assert_eq!(splitter.finish(), None);
-    }
-
-    #[test]
-    fn sentence_splitter_flushes_remaining_text() {
-        let mut splitter = SentenceSplitter::new();
-
-        assert!(splitter.push("No terminal punctuation").is_empty());
-
-        assert_eq!(
-            splitter.finish(),
-            Some("No terminal punctuation".to_string())
-        );
-    }
-
-    #[test]
-    fn sentence_splitter_supports_cjk_punctuation() {
-        let mut splitter = SentenceSplitter::new();
-
-        let sentences = splitter.push("你好世界。继续吗？");
-
-        assert_eq!(sentences, vec!["你好世界。", "继续吗？"]);
-    }
-
-    #[test]
-    fn sentence_splitter_keeps_decimal_points() {
-        let mut splitter = SentenceSplitter::new();
-
-        let sentences = splitter.push("Version 2.0 is ready. Next.");
-
-        assert_eq!(sentences, vec!["Version 2.0 is ready.", "Next."]);
-    }
-
-    #[tokio::test]
-    async fn text_input_text_open_returns_sentence_stream() {
-        let mut stream =
-            TextInput::new(TextInputSource::Text("Hello world. Testing".to_string())).open();
-
-        assert_eq!(stream.next().await.unwrap().unwrap(), "Hello world.");
-        assert_eq!(stream.next().await.unwrap().unwrap(), "Testing");
-        assert!(stream.next().await.is_none());
-    }
-
-    #[test]
-    fn sentence_splitter_splits_across_chunks() {
-        let mut splitter = SentenceSplitter::new();
-
-        assert!(splitter.push("Hello").is_empty());
-        assert_eq!(splitter.push(" world. Next"), vec!["Hello world."]);
-        assert_eq!(splitter.push(" sentence."), vec!["Next sentence."]);
-        assert_eq!(splitter.finish(), None);
     }
 }

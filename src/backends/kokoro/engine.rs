@@ -1,4 +1,7 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+
+use airs_audio::AudioSlice;
 
 use super::model::{KokoroError, KokoroModel, SAMPLE_RATE};
 use super::phonemizer::EspeakConfig;
@@ -83,6 +86,9 @@ pub struct KokoroEngine {
     model_path: Option<PathBuf>,
     espeak: EspeakConfig,
     pub(super) voice: String,
+    pub(super) speed: f32,
+    pub(super) pending: VecDeque<crate::Result<AudioSlice>>,
+    pub(super) closed: bool,
 }
 
 impl Default for KokoroEngine {
@@ -99,6 +105,9 @@ impl KokoroEngine {
             model_path: None,
             espeak: EspeakConfig::default(),
             voice: "af_heart".to_string(),
+            speed: 1.0,
+            pending: VecDeque::new(),
+            closed: false,
         }
     }
 
@@ -115,6 +124,9 @@ impl KokoroEngine {
                 data_path,
             },
             voice: "af_heart".to_string(),
+            speed: 1.0,
+            pending: VecDeque::new(),
+            closed: false,
         }
     }
 

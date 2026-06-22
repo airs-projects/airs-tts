@@ -1,10 +1,13 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use crate::backends::TtsBackend;
 use airs_audio::AudioSlice;
 use engine::{KokoroInferenceParams, KokoroModelParams};
+use futures::{Sink, Stream};
 
 use crate::{Result, TtsError, model_path};
 
@@ -44,29 +47,68 @@ impl TtsBackend for KokoroEngine {
         KokoroEngine::set_voice(self, voice).map_err(|e| TtsError::BackendLoad(e.to_string()))
     }
 
+    fn set_speed(&mut self, speed: f32) {
+        self.speed = speed;
+    }
+
     fn list_voices(&mut self) -> Result<Vec<String>> {
         Ok(KokoroEngine::list_voices(self)
             .into_iter()
             .map(|s| s.to_string())
             .collect())
     }
+}
 
-    fn invoke(&mut self, text: &str, speed: f32) -> Result<AudioSlice> {
+impl Sink<String> for KokoroEngine {
+    type Error = TtsError;
+
+    fn poll_ready(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn start_send(mut self: Pin<&mut Self>, text: String) -> Result<()> {
         let params = KokoroInferenceParams {
             voice: self.voice.clone(),
-            speed,
+            speed: self.speed,
             style_index: None,
         };
 
         let result = self
-            .synthesize(text, Some(params))
+            .synthesize(&text, Some(params))
             .map_err(|e| TtsError::Synthesis(e.to_string()))?;
 
-        Ok(AudioSlice {
+        self.pending.push_back(Ok(AudioSlice {
             samples: result.samples,
             channels: 1,
             sample_rate: result.sample_rate,
-        })
+        }));
+        self.closed = false;
+        Ok(())
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Result<()>> {
+        self.closed = true;
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Stream for KokoroEngine {
+    type Item = Result<AudioSlice>;
+
+    fn poll_next(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if let Some(slice) = self.pending.pop_front() {
+            return Poll::Ready(Some(slice));
+        }
+
+        if self.closed {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
     }
 }
 

@@ -3,8 +3,8 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use airs_audio::{AudioOutput, AudioOutputTarget, AudioSink};
-use airs_tts::{TextInput, TextInputSource, TextStream, TtsBackendKind, TtsEngine};
+use airs_audio::{AudioOutput, AudioSink};
+use airs_tts::{InputSource, OutputTarget, TextInput, TextStream, TtsBackendKind, TtsEngine};
 use futures::SinkExt;
 use futures::StreamExt;
 
@@ -12,8 +12,8 @@ type AppResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone)]
 struct PipeOptions {
-    source: TextInputSource,
-    targets: Vec<AudioOutputTarget>,
+    source: InputSource,
+    targets: Vec<OutputTarget>,
     voice: String,
     speed: f32,
     backend: TtsBackendKind,
@@ -117,7 +117,7 @@ fn parse_pipe(args: &[String]) -> Result<Command, io::Error> {
                 if source.is_some() {
                     return Err(invalid("-i can only be used once"));
                 }
-                source = Some(TextInputSource::Text(text.clone()));
+                source = Some(InputSource::Text(text.clone()));
             }
             "-i:f" => {
                 i += 1;
@@ -127,24 +127,24 @@ fn parse_pipe(args: &[String]) -> Result<Command, io::Error> {
                 if source.is_some() {
                     return Err(invalid("-i can only be used once"));
                 }
-                source = Some(TextInputSource::File(PathBuf::from(path)));
+                source = Some(InputSource::File(PathBuf::from(path)));
             }
             "-i:s" => {
                 if source.is_some() {
                     return Err(invalid("-i can only be used once"));
                 }
-                source = Some(TextInputSource::Stdin);
+                source = Some(InputSource::Stdin);
             }
             "-o:d" => {
                 let name = peek_value(args, &mut i);
-                targets.push(AudioOutputTarget::Device(name));
+                targets.push(OutputTarget::Device(name));
             }
             "-o:f" => {
                 i += 1;
                 let path = args
                     .get(i)
                     .ok_or_else(|| invalid("-o:f requires a file path"))?;
-                targets.push(AudioOutputTarget::File(PathBuf::from(path)));
+                targets.push(OutputTarget::File(PathBuf::from(path)));
             }
             "--backend" => {
                 i += 1;
@@ -259,24 +259,35 @@ async fn cmd_pipe(options: PipeOptions) -> AppResult<()> {
 
     // input
     let mut stream: TextStream = match &options.source {
-        TextInputSource::Stdin => {
+        InputSource::Stdin => {
             eprintln!("Reading from stdin...");
-            TextInput::new(options.source.clone()).open()
+            TextInput::new(options.source.clone())
         }
-        _ => TextInput::new(options.source.clone()).open(),
+        _ => TextInput::new(options.source.clone()),
     };
 
     // output
     let mut sinks: Vec<AudioSink> = options
         .targets
         .iter()
-        .map(|target| AudioOutput::new(target.clone()).open())
-        .collect::<airs_audio::Result<Vec<_>>>()?;
+        .map(|target| AudioOutput::new(target.clone()))
+        .collect::<Vec<_>>();
 
     // process
     while let Some(sentence) = stream.next().await {
-        let sentence = sentence?;
-        let slice = tts.invoke(&sentence)?;
+        tts.send(sentence?).await?;
+        while let Some(slice) = tts.next().await {
+            let slice = slice?;
+            for sink in sinks.iter_mut() {
+                sink.send(slice.clone()).await?;
+            }
+            break;
+        }
+    }
+
+    tts.close().await?;
+    while let Some(slice) = tts.next().await {
+        let slice = slice?;
         for sink in sinks.iter_mut() {
             sink.send(slice.clone()).await?;
         }
@@ -322,11 +333,8 @@ mod tests {
 
         match cmd {
             Command::Pipe { options } => {
-                assert_eq!(
-                    options.source,
-                    TextInputSource::Text("Hello world".to_string())
-                );
-                assert_eq!(options.targets, vec![AudioOutputTarget::Device(None)]);
+                assert_eq!(options.source, InputSource::Text("Hello world".to_string()));
+                assert_eq!(options.targets, vec![OutputTarget::Device(None)]);
             }
             _ => panic!("expected Pipe"),
         }
@@ -347,11 +355,11 @@ mod tests {
             Command::Pipe { options } => {
                 assert_eq!(
                     options.source,
-                    TextInputSource::File(PathBuf::from("input.txt"))
+                    InputSource::File(PathBuf::from("input.txt"))
                 );
                 assert_eq!(
                     options.targets,
-                    vec![AudioOutputTarget::File(PathBuf::from("out.wav"))]
+                    vec![OutputTarget::File(PathBuf::from("out.wav"))]
                 );
             }
             _ => panic!("expected Pipe"),
@@ -370,10 +378,10 @@ mod tests {
 
         match cmd {
             Command::Pipe { options } => {
-                assert_eq!(options.source, TextInputSource::Stdin);
+                assert_eq!(options.source, InputSource::Stdin);
                 assert_eq!(
                     options.targets,
-                    vec![AudioOutputTarget::Device(Some("Speakers".to_string()))]
+                    vec![OutputTarget::Device(Some("Speakers".to_string()))]
                 );
             }
             _ => panic!("expected Pipe"),
@@ -398,8 +406,8 @@ mod tests {
                 assert_eq!(
                     options.targets,
                     vec![
-                        AudioOutputTarget::Device(Some("Speakers".to_string())),
-                        AudioOutputTarget::File(PathBuf::from("out.wav")),
+                        OutputTarget::Device(Some("Speakers".to_string())),
+                        OutputTarget::File(PathBuf::from("out.wav")),
                     ]
                 );
             }
