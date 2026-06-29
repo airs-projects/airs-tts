@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use airs_audio::AudioSlice;
+use airs_audio::AudioFrame;
 
 use super::model::{KokoroError, KokoroModel, SAMPLE_RATE};
 use super::phonemizer::EspeakConfig;
@@ -87,7 +87,7 @@ pub struct KokoroEngine {
     espeak: EspeakConfig,
     pub(super) voice: String,
     pub(super) speed: f32,
-    pub(super) pending: VecDeque<crate::Result<AudioSlice>>,
+    pub(super) pending: VecDeque<crate::Result<AudioFrame>>,
     pub(super) closed: bool,
 }
 
@@ -199,15 +199,15 @@ impl KokoroEngine {
             .unwrap_or_default()
     }
 
-    /// One-shot synthesis: feed text and return audio slices synchronously.
-    pub fn call(&mut self, text: String) -> Result<AudioSlice, Box<dyn std::error::Error>> {
+    /// One-shot synthesis: feed text and return an audio frame synchronously.
+    pub fn call(&mut self, text: String) -> Result<AudioFrame, Box<dyn std::error::Error>> {
         let params = KokoroInferenceParams {
             voice: self.voice.clone(),
             speed: self.speed,
             style_index: None,
         };
         let result = self.synthesize(&text, Some(params))?;
-        Ok(AudioSlice {
+        Ok(AudioFrame {
             samples: result.samples,
             channels: 1,
             sample_rate: result.sample_rate,

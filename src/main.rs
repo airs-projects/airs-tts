@@ -1,22 +1,34 @@
 use std::error::Error;
-use std::io;
+use std::io::{self, Read};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use airs_audio::AudioOutput;
-use airs_tts::{InputSource, OutputTarget, TextInput, TtsBackendKind, TtsEngine};
+use airs_audio::AudioSink;
+use airs_tts::{TtsBackendKind, TtsEngine};
 use futures::SinkExt;
-use futures::StreamExt;
 
 type AppResult<T> = Result<T, Box<dyn Error>>;
 
 #[derive(Debug, Clone)]
 struct PipeOptions {
-    source: InputSource,
-    targets: Vec<OutputTarget>,
+    source: SourceSpec,
+    targets: Vec<TargetSpec>,
     voice: String,
     speed: f32,
     backend: TtsBackendKind,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum SourceSpec {
+    Text(String),
+    File(PathBuf),
+    Stdin,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum TargetSpec {
+    File(PathBuf),
+    Device(Option<String>),
 }
 
 #[derive(Debug, Clone)]
@@ -111,40 +123,22 @@ fn parse_pipe(args: &[String]) -> Result<Command, io::Error> {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "-i:t" => {
-                i += 1;
-                let text = args.get(i).ok_or_else(|| invalid("-i:t requires text"))?;
+            "-i" => {
                 if source.is_some() {
                     return Err(invalid("-i can only be used once"));
                 }
-                source = Some(InputSource::Text(text.clone()));
-            }
-            "-i:f" => {
                 i += 1;
-                let path = args
+                let value = args
                     .get(i)
-                    .ok_or_else(|| invalid("-i:f requires a file path"))?;
-                if source.is_some() {
-                    return Err(invalid("-i can only be used once"));
-                }
-                source = Some(InputSource::File(PathBuf::from(path)));
+                    .ok_or_else(|| invalid("-i requires text:<text>, file:<path>, or stdin"))?;
+                source = Some(parse_source(value)?);
             }
-            "-i:s" => {
-                if source.is_some() {
-                    return Err(invalid("-i can only be used once"));
-                }
-                source = Some(InputSource::Stdin);
-            }
-            "-o:d" => {
-                let name = peek_value(args, &mut i);
-                targets.push(OutputTarget::Device(name));
-            }
-            "-o:f" => {
+            "-o" => {
                 i += 1;
-                let path = args
+                let value = args
                     .get(i)
-                    .ok_or_else(|| invalid("-o:f requires a file path"))?;
-                targets.push(OutputTarget::File(PathBuf::from(path)));
+                    .ok_or_else(|| invalid("-o requires file:<path> or device[:name]"))?;
+                targets.push(parse_target(value)?);
             }
             "--backend" => {
                 i += 1;
@@ -174,9 +168,12 @@ fn parse_pipe(args: &[String]) -> Result<Command, io::Error> {
         i += 1;
     }
 
-    let source = source.ok_or_else(|| invalid("pipe requires -i:t, -i:f, or -i:s"))?;
+    let source = source
+        .ok_or_else(|| invalid("pipe requires -i text:<text>, -i file:<path>, or -i stdin"))?;
     if targets.is_empty() {
-        return Err(invalid("pipe requires at least one -o:d or -o:f"));
+        return Err(invalid(
+            "pipe requires at least one -o file:<path> or -o device[:name]",
+        ));
     }
 
     Ok(Command::Pipe {
@@ -190,15 +187,35 @@ fn parse_pipe(args: &[String]) -> Result<Command, io::Error> {
     })
 }
 
-/// Peek at the next argument; if it looks like a value (not a flag), consume it.
-fn peek_value(args: &[String], i: &mut usize) -> Option<String> {
-    if let Some(next) = args.get(*i + 1) {
-        if !next.starts_with('-') {
-            *i += 1;
-            return Some(next.clone());
-        }
+fn parse_source(value: &str) -> Result<SourceSpec, io::Error> {
+    match split_typed_value(value) {
+        ("text", Some(text)) if !text.is_empty() => Ok(SourceSpec::Text(text.to_string())),
+        ("text", _) => Err(invalid("-i text requires text")),
+        ("file", Some(path)) if !path.is_empty() => Ok(SourceSpec::File(PathBuf::from(path))),
+        ("file", _) => Err(invalid("-i file requires a path")),
+        ("stdin", None) => Ok(SourceSpec::Stdin),
+        ("stdin", Some("")) => Ok(SourceSpec::Stdin),
+        ("stdin", Some(_)) => Err(invalid("-i stdin does not accept a value")),
+        (kind, _) => Err(invalid(format!("unsupported input type: {kind}"))),
     }
-    None
+}
+
+fn parse_target(value: &str) -> Result<TargetSpec, io::Error> {
+    match split_typed_value(value) {
+        ("file", Some(path)) if !path.is_empty() => Ok(TargetSpec::File(PathBuf::from(path))),
+        ("file", _) => Err(invalid("-o file requires a path")),
+        ("device", name) => Ok(TargetSpec::Device(
+            name.filter(|name| !name.is_empty()).map(str::to_owned),
+        )),
+        (kind, _) => Err(invalid(format!("unsupported output type: {kind}"))),
+    }
+}
+
+fn split_typed_value(value: &str) -> (&str, Option<&str>) {
+    match value.split_once(':') {
+        Some((kind, value)) => (kind, Some(value)),
+        None => (value, None),
+    }
 }
 
 fn cmd_help() {
@@ -208,18 +225,18 @@ fn cmd_help() {
     println!("  airs-tts --version");
     println!("  airs-tts list_voices [--backend <name>]");
     println!(
-        "  airs-tts pipe -i:t <text> -i:f <file> -i:s -o:d [device] -o:f <file> [--voice <name>] [--speed <value>] [--backend <name>]"
+        "  airs-tts pipe -i <source> -o <target> [-o <target>...] [--voice <name>] [--speed <value>] [--backend <name>]"
     );
     println!();
     println!("Source:");
-    println!("  -i:t <text>      Text");
-    println!("  -i:f <path>      Text file");
-    println!("  -i:s             Standard input");
+    println!("  -i text:<text>   Text");
+    println!("  -i file:<path>   Text file");
+    println!("  -i stdin         Standard input");
     println!();
     println!("Target:");
-    println!("  -o:d             Default audio output device");
-    println!("  -o:d <name>      Named audio output device");
-    println!("  -o:f <path>      Audio file");
+    println!("  -o file:<path>   Audio file");
+    println!("  -o device        Default audio output device");
+    println!("  -o device:<name> Named audio output device");
     println!();
     println!(
         "Defaults: voice={}, speed={}, backend={}.",
@@ -255,30 +272,19 @@ async fn cmd_pipe(options: PipeOptions) -> AppResult<()> {
         .set_backend(options.backend)
         .set_voice(&options.voice)
         .set_speed(options.speed)
-        .init().await?;
+        .init()
+        .await?;
 
-    // input
-    let mut input: TextInput = match &options.source {
-        InputSource::Stdin => {
-            eprintln!("Reading from stdin...");
-            TextInput::new(options.source.clone())
-        }
-        _ => TextInput::new(options.source.clone()),
-    };
-
-    // output
-    let mut outputs: Vec<AudioOutput> = options
+    let input = options.source.read()?;
+    let mut outputs: Vec<AudioSink> = options
         .targets
-        .iter()
-        .map(|target| AudioOutput::new(target.clone()))
+        .into_iter()
+        .map(TargetSpec::into_sink)
         .collect::<Vec<_>>();
 
-    // process
-    while let Some(sentence) = input.next().await {
-        let audio_slice = tts.call(sentence?).await?;
-        for output in outputs.iter_mut() {
-            output.send(audio_slice.clone()).await?;
-        }
+    let audio_frame = tts.call(input).await?;
+    for output in outputs.iter_mut() {
+        output.send(audio_frame.clone()).await?;
     }
 
     for output in &mut outputs {
@@ -286,6 +292,30 @@ async fn cmd_pipe(options: PipeOptions) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+impl SourceSpec {
+    fn read(&self) -> io::Result<String> {
+        match self {
+            Self::Text(text) => Ok(text.clone()),
+            Self::File(path) => std::fs::read_to_string(path),
+            Self::Stdin => {
+                eprintln!("Reading from stdin...");
+                let mut text = String::new();
+                io::stdin().read_to_string(&mut text)?;
+                Ok(text)
+            }
+        }
+    }
+}
+
+impl TargetSpec {
+    fn into_sink(self) -> AudioSink {
+        match self {
+            Self::File(path) => AudioSink::to_file(path),
+            Self::Device(name) => AudioSink::to_device(name),
+        }
+    }
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -313,16 +343,17 @@ mod tests {
     fn parse_pipe_text_to_device() {
         let cmd = parse_command(vec![
             "pipe".to_string(),
-            "-i:t".to_string(),
-            "Hello world".to_string(),
-            "-o:d".to_string(),
+            "-i".to_string(),
+            "text:Hello world".to_string(),
+            "-o".to_string(),
+            "device".to_string(),
         ])
         .expect("parse command");
 
         match cmd {
             Command::Pipe { options } => {
-                assert_eq!(options.source, InputSource::Text("Hello world".to_string()));
-                assert_eq!(options.targets, vec![OutputTarget::Device(None)]);
+                assert_eq!(options.source, SourceSpec::Text("Hello world".to_string()));
+                assert_eq!(options.targets, vec![TargetSpec::Device(None)]);
             }
             _ => panic!("expected Pipe"),
         }
@@ -332,22 +363,19 @@ mod tests {
     fn parse_pipe_file_to_file() {
         let cmd = parse_command(vec![
             "pipe".to_string(),
-            "-i:f".to_string(),
-            "input.txt".to_string(),
-            "-o:f".to_string(),
-            "out.wav".to_string(),
+            "-i".to_string(),
+            "file:input.txt".to_string(),
+            "-o".to_string(),
+            "file:out.wav".to_string(),
         ])
         .expect("parse command");
 
         match cmd {
             Command::Pipe { options } => {
-                assert_eq!(
-                    options.source,
-                    InputSource::File(PathBuf::from("input.txt"))
-                );
+                assert_eq!(options.source, SourceSpec::File(PathBuf::from("input.txt")));
                 assert_eq!(
                     options.targets,
-                    vec![OutputTarget::File(PathBuf::from("out.wav"))]
+                    vec![TargetSpec::File(PathBuf::from("out.wav"))]
                 );
             }
             _ => panic!("expected Pipe"),
@@ -358,18 +386,19 @@ mod tests {
     fn parse_pipe_stdin_to_named_device() {
         let cmd = parse_command(vec![
             "pipe".to_string(),
-            "-i:s".to_string(),
-            "-o:d".to_string(),
-            "Speakers".to_string(),
+            "-i".to_string(),
+            "stdin".to_string(),
+            "-o".to_string(),
+            "device:Speakers".to_string(),
         ])
         .expect("parse command");
 
         match cmd {
             Command::Pipe { options } => {
-                assert_eq!(options.source, InputSource::Stdin);
+                assert_eq!(options.source, SourceSpec::Stdin);
                 assert_eq!(
                     options.targets,
-                    vec![OutputTarget::Device(Some("Speakers".to_string()))]
+                    vec![TargetSpec::Device(Some("Speakers".to_string()))]
                 );
             }
             _ => panic!("expected Pipe"),
@@ -380,12 +409,12 @@ mod tests {
     fn parse_pipe_multiple_targets() {
         let cmd = parse_command(vec![
             "pipe".to_string(),
-            "-i:t".to_string(),
-            "Hello".to_string(),
-            "-o:d".to_string(),
-            "Speakers".to_string(),
-            "-o:f".to_string(),
-            "out.wav".to_string(),
+            "-i".to_string(),
+            "text:Hello".to_string(),
+            "-o".to_string(),
+            "device:Speakers".to_string(),
+            "-o".to_string(),
+            "file:out.wav".to_string(),
         ])
         .expect("parse command");
 
@@ -394,8 +423,8 @@ mod tests {
                 assert_eq!(
                     options.targets,
                     vec![
-                        OutputTarget::Device(Some("Speakers".to_string())),
-                        OutputTarget::File(PathBuf::from("out.wav")),
+                        TargetSpec::Device(Some("Speakers".to_string())),
+                        TargetSpec::File(PathBuf::from("out.wav")),
                     ]
                 );
             }
@@ -405,57 +434,70 @@ mod tests {
 
     #[test]
     fn parse_pipe_missing_source_fails() {
-        let err = parse_command(vec!["pipe".to_string(), "-o:d".to_string()])
-            .expect_err("missing source should fail");
+        let err = parse_command(vec![
+            "pipe".to_string(),
+            "-o".to_string(),
+            "device".to_string(),
+        ])
+        .expect_err("missing source should fail");
 
-        assert_eq!(err.to_string(), "pipe requires -i:t, -i:f, or -i:s");
+        assert_eq!(
+            err.to_string(),
+            "pipe requires -i text:<text>, -i file:<path>, or -i stdin"
+        );
     }
 
     #[test]
     fn parse_pipe_missing_target_fails() {
         let err = parse_command(vec![
             "pipe".to_string(),
-            "-i:t".to_string(),
-            "Hello".to_string(),
+            "-i".to_string(),
+            "text:Hello".to_string(),
         ])
         .expect_err("missing target should fail");
 
-        assert_eq!(err.to_string(), "pipe requires at least one -o:d or -o:f");
+        assert_eq!(
+            err.to_string(),
+            "pipe requires at least one -o file:<path> or -o device[:name]"
+        );
     }
 
     #[test]
     fn parse_pipe_unknown_input_flag_fails() {
         let err = parse_command(vec![
             "pipe".to_string(),
-            "-i:x".to_string(),
-            "Hello".to_string(),
-            "-o:d".to_string(),
+            "-i".to_string(),
+            "url:Hello".to_string(),
+            "-o".to_string(),
+            "device".to_string(),
         ])
         .expect_err("unknown input flag should fail");
 
-        assert_eq!(err.to_string(), "unexpected argument: -i:x");
+        assert_eq!(err.to_string(), "unsupported input type: url");
     }
 
     #[test]
     fn parse_pipe_unknown_output_flag_fails() {
         let err = parse_command(vec![
             "pipe".to_string(),
-            "-i:t".to_string(),
-            "Hello".to_string(),
-            "-o:x".to_string(),
+            "-i".to_string(),
+            "text:Hello".to_string(),
+            "-o".to_string(),
+            "url:speaker".to_string(),
         ])
         .expect_err("unknown output flag should fail");
 
-        assert_eq!(err.to_string(), "unexpected argument: -o:x");
+        assert_eq!(err.to_string(), "unsupported output type: url");
     }
 
     #[test]
     fn parse_pipe_backend_voice_and_speed() {
         let cmd = parse_command(vec![
             "pipe".to_string(),
-            "-i:t".to_string(),
-            "Hello".to_string(),
-            "-o:d".to_string(),
+            "-i".to_string(),
+            "text:Hello".to_string(),
+            "-o".to_string(),
+            "device".to_string(),
             "--backend".to_string(),
             "kokoro".to_string(),
             "--voice".to_string(),
@@ -470,6 +512,32 @@ mod tests {
                 assert_eq!(options.backend, TtsBackendKind::Kokoro);
                 assert_eq!(options.voice, "bf_emma");
                 assert_eq!(options.speed, 1.25);
+            }
+            _ => panic!("expected Pipe"),
+        }
+    }
+
+    #[test]
+    fn parse_pipe_windows_file_paths() {
+        let cmd = parse_command(vec![
+            "pipe".to_string(),
+            "-i".to_string(),
+            "file:E:\\input.txt".to_string(),
+            "-o".to_string(),
+            "file:E:\\speech.wav".to_string(),
+        ])
+        .expect("parse command");
+
+        match cmd {
+            Command::Pipe { options } => {
+                assert_eq!(
+                    options.source,
+                    SourceSpec::File(PathBuf::from("E:\\input.txt"))
+                );
+                assert_eq!(
+                    options.targets,
+                    vec![TargetSpec::File(PathBuf::from("E:\\speech.wav"))]
+                );
             }
             _ => panic!("expected Pipe"),
         }

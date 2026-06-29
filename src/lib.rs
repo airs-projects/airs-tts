@@ -2,8 +2,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use airs_audio::AudioSlice;
-pub use airs_io::{InputSource, OutputTarget, TextInput, TextSplitter};
+use airs_audio::AudioFrame;
 use futures::{Sink, Stream};
 
 mod backends;
@@ -179,8 +178,8 @@ impl TtsEngine {
         self.backend.as_mut().unwrap().list_voices()
     }
 
-    /// One-shot synthesis: feed text and collect all output audio slices.
-    pub async fn call(&mut self, text: String) -> Result<AudioSlice> {
+    /// One-shot synthesis: feed text and collect one output audio frame.
+    pub async fn call(&mut self, text: String) -> Result<AudioFrame> {
         if !self.is_ready {
             return Err(TtsError::InvalidInput(
                 "TTS backend is not initialized. Call init() first.".to_string(),
@@ -240,7 +239,7 @@ impl Sink<String> for TtsEngine {
 }
 
 impl Stream for TtsEngine {
-    type Item = Result<AudioSlice>;
+    type Item = Result<AudioFrame>;
 
     fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.is_ready {

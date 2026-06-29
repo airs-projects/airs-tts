@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use async_trait::async_trait;
 use crate::backends::TtsBackend;
-use airs_audio::AudioSlice;
+use airs_audio::AudioFrame;
+use async_trait::async_trait;
 use engine::{KokoroInferenceParams, KokoroModelParams};
 use futures::{Sink, Stream};
 
@@ -60,7 +60,7 @@ impl TtsBackend for KokoroEngine {
             .collect())
     }
 
-    async fn call(&mut self, text: String) -> Result<AudioSlice> {
+    async fn call(&mut self, text: String) -> Result<AudioFrame> {
         KokoroEngine::call(self, text).map_err(|e| TtsError::Synthesis(e.to_string()))
     }
 }
@@ -83,7 +83,7 @@ impl Sink<String> for KokoroEngine {
             .synthesize(&text, Some(params))
             .map_err(|e| TtsError::Synthesis(e.to_string()))?;
 
-        self.pending.push_back(Ok(AudioSlice {
+        self.pending.push_back(Ok(AudioFrame {
             samples: result.samples,
             channels: 1,
             sample_rate: result.sample_rate,
@@ -103,7 +103,7 @@ impl Sink<String> for KokoroEngine {
 }
 
 impl Stream for KokoroEngine {
-    type Item = Result<AudioSlice>;
+    type Item = Result<AudioFrame>;
 
     fn poll_next(mut self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if let Some(slice) = self.pending.pop_front() {
