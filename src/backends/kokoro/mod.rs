@@ -60,8 +60,8 @@ impl TtsBackend for KokoroEngine {
             .collect())
     }
 
-    async fn call(&mut self, text: String) -> Result<AudioFrame> {
-        KokoroEngine::call(self, text).map_err(|e| TtsError::Synthesis(e.to_string()))
+    async fn process(&mut self, text: String) -> Result<AudioFrame> {
+        KokoroEngine::process(self, text).map_err(|e| TtsError::Synthesis(e.to_string()))
     }
 }
 

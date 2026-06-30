@@ -200,7 +200,7 @@ impl KokoroEngine {
     }
 
     /// One-shot synthesis: feed text and return an audio frame synchronously.
-    pub fn call(&mut self, text: String) -> Result<AudioFrame, Box<dyn std::error::Error>> {
+    pub fn process(&mut self, text: String) -> Result<AudioFrame, Box<dyn std::error::Error>> {
         let params = KokoroInferenceParams {
             voice: self.voice.clone(),
             speed: self.speed,

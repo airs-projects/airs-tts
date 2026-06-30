@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use airs_audio::AudioSink;
-use airs_tts::{TtsBackendKind, TtsEngine};
+use airs_tts::{Processor, TtsBackendKind};
 use futures::SinkExt;
 
 type AppResult<T> = Result<T, Box<dyn Error>>;
@@ -268,7 +268,7 @@ fn cmd_list_voices(_backend: TtsBackendKind) -> AppResult<()> {
 }
 
 async fn cmd_pipe(options: PipeOptions) -> AppResult<()> {
-    let mut tts = TtsEngine::new()
+    let mut tts = Processor::new()
         .set_backend(options.backend)
         .set_voice(&options.voice)
         .set_speed(options.speed)
@@ -282,7 +282,7 @@ async fn cmd_pipe(options: PipeOptions) -> AppResult<()> {
         .map(TargetSpec::into_sink)
         .collect::<Vec<_>>();
 
-    let audio_frame = tts.call(input).await?;
+    let audio_frame = tts.process(input).await?;
     for output in outputs.iter_mut() {
         output.send(audio_frame.clone()).await?;
     }

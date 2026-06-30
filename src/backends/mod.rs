@@ -15,5 +15,5 @@ pub(crate) trait TtsBackend:
     fn set_voice(&mut self, voice: &str) -> Result<()>;
     fn set_speed(&mut self, speed: f32);
     fn list_voices(&mut self) -> Result<Vec<String>>;
-    async fn call(&mut self, text: String) -> Result<AudioFrame>;
+    async fn process(&mut self, text: String) -> Result<AudioFrame>;
 }

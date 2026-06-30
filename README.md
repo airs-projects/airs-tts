@@ -23,13 +23,13 @@ airs-tts pipe -i stdin -o device:speaker -o file:speech.wav
 - `Result<T>` - Library result type using `TtsError`.
 - `TtsError` - Error enum for invalid input, backend load, synthesis, and audio failures.
 
-- `TtsEngine` - Text-to-speech engine with chainable backend configuration.
-- `TtsEngine::new()` - Create a new engine with default backend and voice.
+- `Processor` - Text-to-speech processor with chainable backend configuration.
+- `Processor::new()` - Create a new processor with default backend and voice.
 - `TtsBackendKind` - Backend selection enum (e.g. `TtsBackendKind::Kokoro`).
-- `TtsEngine::set_backend(kind)` - Set the backend implementation.
-- `TtsEngine::set_voice(name)` - Set the voice by name (e.g. `"af_heart"`, `"bf_emma"`, `"zf_xiaobei"`).
-- `TtsEngine::set_speed(value)` - Set the speech speed multiplier (0.5-2.0, default 1.0).
-- `TtsEngine::init()` - Async; load the selected implementation before synthesis.
-- `TtsEngine::call(text)` - Async; one-shot synthesis: feed text and return a single `AudioFrame`.
-- `TtsEngine::is_ready()` - Return whether the selected backend has been initialized.
-- `TtsEngine::list_voices()` - List all available voice names.
+- `Processor::set_backend(kind)` - Set the backend implementation.
+- `Processor::set_voice(name)` - Set the voice by name (e.g. `"af_heart"`, `"bf_emma"`, `"zf_xiaobei"`).
+- `Processor::set_speed(value)` - Set the speech speed multiplier (0.5-2.0, default 1.0).
+- `Processor::init()` - Async; load the selected implementation before synthesis.
+- `Processor::process(text)` - Async; one-shot synthesis: feed text and return a single `AudioFrame`.
+- `Processor::is_ready()` - Return whether the selected backend has been initialized.
+- `Processor::list_voices()` - List all available voice names.

@@ -83,8 +83,8 @@ pub fn tts_list_voices() -> Result<Vec<VoiceInfo>> {
     Ok(voices)
 }
 
-/// Text-to-speech engine with chainable backend configuration.
-pub struct TtsEngine {
+/// Text-to-speech processor with chainable backend configuration.
+pub struct Processor {
     backend_kind: TtsBackendKind,
     backend: Option<Box<dyn TtsBackend>>,
     is_ready: bool,
@@ -92,7 +92,7 @@ pub struct TtsEngine {
     speed: f32,
 }
 
-impl Default for TtsEngine {
+impl Default for Processor {
     fn default() -> Self {
         Self {
             backend_kind: TtsBackendKind::default(),
@@ -104,8 +104,8 @@ impl Default for TtsEngine {
     }
 }
 
-impl TtsEngine {
-    /// Create a new TTS engine with default settings.
+impl Processor {
+    /// Create a new TTS processor with default settings.
     pub fn new() -> Self {
         Self::default()
     }
@@ -132,7 +132,7 @@ impl TtsEngine {
         self
     }
 
-    /// Load the selected implementation before the first synthesis call.
+    /// Load the selected implementation before the first synthesis request.
     pub async fn init(mut self) -> Result<Self> {
         if self.backend.is_none() {
             #[cfg(feature = "kokoro")]
@@ -179,18 +179,18 @@ impl TtsEngine {
     }
 
     /// One-shot synthesis: feed text and collect one output audio frame.
-    pub async fn call(&mut self, text: String) -> Result<AudioFrame> {
+    pub async fn process(&mut self, text: String) -> Result<AudioFrame> {
         if !self.is_ready {
             return Err(TtsError::InvalidInput(
                 "TTS backend is not initialized. Call init() first.".to_string(),
             ));
         }
 
-        self.backend.as_mut().unwrap().call(text).await
+        self.backend.as_mut().unwrap().process(text).await
     }
 }
 
-impl Sink<String> for TtsEngine {
+impl Sink<String> for Processor {
     type Error = TtsError;
 
     fn poll_ready(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Result<()>> {
@@ -238,7 +238,7 @@ impl Sink<String> for TtsEngine {
     }
 }
 
-impl Stream for TtsEngine {
+impl Stream for Processor {
     type Item = Result<AudioFrame>;
 
     fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -280,7 +280,7 @@ mod tests {
 
     #[test]
     fn engine_uses_default_settings() {
-        let engine = TtsEngine::new();
+        let engine = Processor::new();
 
         #[cfg(feature = "kokoro")]
         assert!(matches!(&engine.backend_kind, TtsBackendKind::Kokoro));
@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn engine_supports_chainable_settings() {
-        let engine = TtsEngine::new()
+        let engine = Processor::new()
             .set_backend(TtsBackendKind::Kokoro)
             .set_voice("bf_emma")
             .set_speed(1.25);
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn engine_requires_init_before_use() {
-        let mut engine = TtsEngine::new();
+        let mut engine = Processor::new();
 
         let err = engine
             .list_voices()
